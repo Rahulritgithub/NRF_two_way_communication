@@ -1,0 +1,4 @@
+3-NRF module
+2-Arduino
+1-ESP32
+Arduino-IDE

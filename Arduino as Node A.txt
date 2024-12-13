@@ -1,0 +1,122 @@
+#include <SPI.h>
+#include "RF24.h"
+
+RF24 radio(9, 10);                      // CE, CSN
+const byte base_address[6] = "BASE1";   // Shared base address for all nodes
+unsigned long lastClearTime = 0;        // Time to clear the list
+const unsigned long clearInterval = 15000; // Clear the list every 15 seconds
+unsigned long lastSendTime = 0;         // Last time a message was sent
+const unsigned long sendInterval = 2000; // Send data every 2 seconds
+
+#define MAX_NODES 10
+int connectedNodes[MAX_NODES];          // Temporary list of recently communicated nodes
+int nodeCount = 0;
+
+void setup() {
+  Serial.begin(115200);
+  Serial.println(F("Node A starting..."));
+
+  radio.begin();
+  radio.setPALevel(RF24_PA_LOW);
+  radio.openWritingPipe(base_address);  // Use shared base address for writing
+  radio.openReadingPipe(1, base_address); // Use shared base address for reading
+  radio.startListening();               // Start listening for incoming messages
+
+  // Initialize the node list to -1 (indicating empty slots)
+  for (int i = 0; i < MAX_NODES; i++) {
+    connectedNodes[i] = -1;
+  }
+}
+
+void loop() {
+  unsigned long currentTime = millis();
+
+  // Clear the node list every clearInterval
+  if (currentTime - lastClearTime >= clearInterval) {
+    clearNodeList();
+    lastClearTime = currentTime;
+    Serial.println(F("Cleared node list."));
+  }
+
+  // Listen for incoming messages
+  if (radio.available()) {
+    unsigned long startMicros = micros();  // Start timing
+    char incomingMsg[32];
+    radio.read(&incomingMsg, sizeof(incomingMsg));
+    unsigned long endMicros = micros();  // End timing
+    int rssi = estimateRSSI(endMicros - startMicros);  // Estimate RSSI
+    processIncomingMessage(incomingMsg, rssi);
+  }
+
+  // Send a message periodically
+  if (currentTime - lastSendTime >= sendInterval) {
+    lastSendTime = currentTime;
+
+    radio.stopListening();  // Switch to transmit mode
+    String outgoingMsg = "DATA:TN5543";  // Example outgoing message
+    if (radio.write(outgoingMsg.c_str(), outgoingMsg.length() + 1)) {
+      Serial.print(F("Message sent: "));
+      Serial.println(outgoingMsg);
+    } else {
+      Serial.println(F("Message send failed."));
+    }
+    radio.startListening();  // Switch back to listen mode
+  }
+}
+
+void processIncomingMessage(char* message, int rssi) {
+  Serial.print(F("Received message: "));
+  Serial.print(message);
+  Serial.print(F(" with estimated RSSI: "));
+  Serial.println(rssi);
+
+  // Check if the message starts with "HELLO:"
+  if (strncmp(message, "HELLO:", 6) == 0) {
+    String senderID = String(message + 6);  // Extract the sender's ID
+    Serial.print(F("Handshake request from: "));
+    Serial.println(senderID);
+
+    if (!isNodeInList(senderID.toInt())) {
+      addNodeToList(senderID.toInt());
+    }
+  }
+}
+
+int estimateRSSI(unsigned long duration) {
+  // Constants for logarithmic estimation
+  const unsigned long maxDuration = 1000;  // Example maximum duration in microseconds
+  const int maxRSSI = -50;  // Example maximum RSSI value
+  const int minRSSI = -90;  // Example minimum RSSI value
+  const float scaleFactor = 10.0;  // Adjust this factor based on your observations
+
+  // Logarithmic estimation
+  if (duration > maxDuration) {
+    return minRSSI;
+  } else {
+    float normalizedDuration = (float)duration / maxDuration;
+    return maxRSSI - (maxRSSI - minRSSI) * log10(1 + normalizedDuration * scaleFactor);
+  }
+}
+
+void addNodeToList(int nodeID) {
+  if (nodeCount < MAX_NODES) {
+    connectedNodes[nodeCount++] = nodeID;
+  }
+}
+
+bool isNodeInList(int nodeID) {
+  for (int i = 0; i < nodeCount; i++) {
+    if (connectedNodes[i] == nodeID) {
+      return true;
+    }
+  }
+  return false;
+}
+
+void clearNodeList() {
+  for (int i = 0; i < MAX_NODES; i++) {
+    connectedNodes[i] = -1;
+  }
+  nodeCount = 0;
+  Serial.println(F("Node list cleared."));
+}
